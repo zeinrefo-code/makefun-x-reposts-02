@@ -16,7 +16,8 @@
  *      all from the same account, never @makefunai's own account, and no
  *      address named twice.
  *   3. Copy the file, byte for byte, to POSTS.json in the output
- *      directory (MAKEFUN_OUTPUT_DIR, default: /output).
+ *      directory (MAKEFUN_OUTPUT_DIR, default: /output), and note on
+ *      stderr how many posts were handed in and from which account.
  *
  * While the entrant has not posted yet there is no POSTS.json, and that
  * is not an error at build time: the program notes it on stderr and
@@ -60,9 +61,11 @@ function outputDir(): string {
 
 /**
  * Check the parsed contents of POSTS.json against the bounty's hand-in
- * rules. Returns nothing; any problem is a hard failure via fail().
+ * rules. Any problem is a hard failure via fail(). On success, returns
+ * the hand-in's shape (how many posts, from which account) so the
+ * caller can report what was handed in.
  */
-function validatePostsFile(data: unknown): void {
+function validatePostsFile(data: unknown): { count: number; account: string } {
   if (typeof data !== "object" || data === null || Array.isArray(data)) {
     fail('POSTS.json must be a JSON object shaped like {"posts": [...]}');
   }
@@ -79,29 +82,46 @@ function validatePostsFile(data: unknown): void {
 
   let account: string | null = null;
   const seen = new Set<string>();
-  for (const item of posts) {
+  posts.forEach((item, index) => {
+    const where = `POSTS.json post #${index + 1}`;
     if (typeof item !== "string") {
-      fail("POSTS.json: every entry in \"posts\" must be a URL string");
+      fail(`${where}: every entry in "posts" must be a URL string`);
     }
-    const match = STATUS_URL.exec(item.trim());
+    if (item.length === 0 || item !== item.trim()) {
+      fail(
+        `${where}: the address is empty or padded with spaces; ` +
+          "give the bare URL with nothing around it",
+      );
+    }
+    const match = STATUS_URL.exec(item);
     if (match === null) {
-      fail(`POSTS.json: not an X post address: ${item}`);
+      fail(
+        `${where}: not an X post address: ${item} — expected ` +
+          "https://x.com/<account>/status/<post number>",
+      );
     }
     const handle = match[1].toLowerCase();
     if (handle === HOUSE_HANDLE) {
-      fail("POSTS.json: the posts must be the entrant's own, not @makefunai's");
+      fail(`${where}: the posts must be the entrant's own, not @makefunai's`);
     }
     if (account === null) {
       account = handle;
     } else if (handle !== account) {
-      fail("POSTS.json: all posts must come from one X account");
+      fail(
+        `${where}: this post is from @${handle}, but the earlier posts ` +
+          `are from @${account}; all posts must come from one X account`,
+      );
     }
     const key = `${handle}/${match[2]}`;
     if (seen.has(key)) {
-      fail(`POSTS.json: this post is named twice: ${item}`);
+      fail(`${where}: this post is named twice: ${item}`);
     }
     seen.add(key);
-  }
+  });
+
+  // The loop only completes when every post passed, so an account is
+  // always known here.
+  return { count: posts.length, account: account as string };
 }
 
 function main(): void {
@@ -125,11 +145,16 @@ function main(): void {
   } catch {
     fail("POSTS.json is not valid JSON");
   }
-  validatePostsFile(parsed);
+  const summary = validatePostsFile(parsed);
 
   // Hand the file on exactly as written; the house reads the addresses
   // from it, and any reformatting could only hurt.
   writeFileSync(join(targetDir, "POSTS.json"), raw);
+
+  // Say what was handed in, so a run's log shows the entry at a glance.
+  process.stderr.write(
+    `main.ts: handed in ${summary.count} post(s) from @${summary.account}.\n`,
+  );
 }
 
 main();
